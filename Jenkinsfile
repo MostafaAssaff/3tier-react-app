@@ -1,16 +1,16 @@
 // ===================================================================
 // Jenkinsfile (Final Production-Ready Version)
-// UPDATED: Added the 'tools' directive to use the configured SonarQube Scanner.
+// UPDATED: Corrected the tool type for the SonarQube Scanner.
 // ===================================================================
 
 pipeline {
     agent any
 
-    // --- THIS IS THE CRUCIAL ADDITION ---
-    // This directive tells Jenkins to find the tool named 'SonarScanner-latest'
-    // (which we configured in Global Tool Configuration) and add it to the PATH.
+    // --- THIS IS THE CRUCIAL CORRECTION ---
+    // The tool type for SonarQube Scanner is 'hudson.plugins.sonar.SonarRunnerInstallation',
+    // not 'sonarqube'. This must match the name of the tool configured in Global Tool Configuration.
     tools {
-        sonarqube 'SonarScanner-latest'
+        hudson.plugins.sonar.SonarRunnerInstallation 'SonarScanner-latest'
     }
     // ------------------------------------
 
