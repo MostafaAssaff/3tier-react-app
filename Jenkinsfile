@@ -1,13 +1,15 @@
 // ===================================================================
 // Jenkinsfile (Final Production-Ready Version)
-// UPDATED: Simplified SonarQube integration for better compatibility.
+// UPDATED: Corrected the 'timeout' unit from 'h' to 'HOURS'.
 // ===================================================================
 
 pipeline {
     agent any
 
-    // We no longer need the 'tools' directive here.
-    // We will define the SonarScanner home as an environment variable.
+    tools {
+        // The tool type must be enclosed in quotes because it contains dots.
+        'hudson.plugins.sonar.SonarRunnerInstallation' 'SonarScanner-latest'
+    }
 
     environment {
         AWS_REGION        = 'us-west-2'
@@ -16,12 +18,7 @@ pipeline {
         EKS_CLUSTER_NAME  = 'my-eks-cluster'
         
         SONAR_CREDENTIALS = credentials('sonar-token')
-        AWS_CREDENTIALS_ID = 'aws-credentials'
-        
-        // --- THIS IS THE NEW APPROACH ---
-        // We get the path to the SonarScanner tool that Jenkins manages.
-        // 'SonarScanner-latest' must match the name you configured in the Tools section.
-        SONAR_SCANNER_HOME = tool 'SonarScanner-latest'
+        AWS_CREDENTIALS_ID = 'aws-credentials' 
     }
 
     stages {
@@ -38,17 +35,17 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 script {
-                    // Use the SonarQube configuration defined in Jenkins System settings
                     withSonarQubeEnv('MySonarQubeServer') { 
-                        // We now call the scanner using its full path, which is guaranteed to work.
-                        sh "${SONAR_SCANNER_HOME}/bin/sonar-scanner"
+                        sh 'sonar-scanner'
                     }
                 }
             }
             post {
                 success {
                     script {
-                        timeout(time: 1, unit: 'h') {
+                        // --- THIS IS THE CRUCIAL CORRECTION ---
+                        // The time unit must be in uppercase (e.g., HOURS, MINUTES, SECONDS).
+                        timeout(time: 1, unit: 'HOURS') {
                             def qg = waitForQualityGate()
                             if (qg.status != 'OK') {
                                 error "Pipeline aborted due to SonarQube Quality Gate failure: ${qg.status}"
