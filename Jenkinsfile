@@ -1,66 +1,151 @@
+// ===================================================================
+// Jenkinsfile (Final Production-Ready Version)
+// This declarative pipeline automates the entire CI/CD process.
+// ===================================================================
+
 pipeline {
-  agent any
+    // 1. Agent Configuration
+    // Run this pipeline on any available agent.
+    agent any
 
-  environment {
-    AWS_REGION = "us-west-2"
-    CLUSTER_NAME = "my-eks-cluster"
-  }
+    // 2. Environment Variables
+    // Define all necessary variables here for easy management.
+    environment {
+        AWS_REGION        = 'us-west-2'
+        ECR_REGISTRY      = '889818960214.dkr.ecr.us-west-2.amazonaws.com'
+        ECR_REPO_NAME     = 'my-app-repo' // The correct repository name
+        EKS_CLUSTER_NAME  = 'my-eks-cluster'
+        
+        // These will use the credentials securely stored in Jenkins.
+        SONAR_CREDENTIALS = credentials('sonar-token')
+        // The ID of the AWS credentials stored in Jenkins
+        AWS_CREDENTIALS_ID = 'aws-credentials' 
+    }
 
-  stages {
-    stage('Build Frontend Image') {
-      steps {
-        dir('frontend') {
-          sh 'docker build -t my-frontend:latest .'
+    // 3. Pipeline Stages
+    stages {
+        
+        // ==========================================================
+        // Stage 1: Checkout Code
+        // Fetches the code from the specific branch being built.
+        // ==========================================================
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "Checking out code from branch: ${env.BRANCH_NAME}"
+                    checkout scm
+                }
+            }
         }
-      }
-    }
 
-    stage('Build Backend Image') {
-      steps {
-        dir('backend') {
-          sh 'docker build -t my-backend:latest .'
+        // ==========================================================
+        // Stage 2: SonarQube Quality Check
+        // ==========================================================
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    // Make sure you've configured your SonarQube server in Manage Jenkins -> System Configuration
+                    withSonarQubeEnv('MySonarQubeServer') { 
+                        // The scanner will look for a 'sonar-project.properties' file in your repo root.
+                        sh 'sonar-scanner'
+                    }
+                }
+            }
+            post {
+                success {
+                    script {
+                        // This crucial step pauses the pipeline to wait for the analysis result
+                        // and fails the build if the Quality Gate status is not 'OK'.
+                        timeout(time: 1, unit: 'h') {
+                            def qg = waitForQualityGate()
+                            if (qg.status != 'OK') {
+                                error "Pipeline aborted due to SonarQube Quality Gate failure: ${qg.status}"
+                            }
+                        }
+                    }
+                }
+            }
         }
-      }
-    }
 
-    stage('Push Images to ECR') {
-      steps {
-        script {
-          sh '''
-            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin 889818960214.dkr.ecr.$AWS_REGION.amazonaws.com
+        // ==========================================================
+        // Stage 3: Build, Scan & Push Application Images
+        // This stage builds both frontend and backend images in parallel.
+        // ==========================================================
+        stage('Build, Scan & Push Images') {
+            parallel {
+                stage('Backend') {
+                    steps {
+                        dir('backend') { // Work inside the 'backend' directory
+                            script {
+                                // Use BUILD_ID to create a unique tag for each build
+                                def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-backend-${env.BUILD_ID}"
+                                
+                                echo "Building Backend image: ${imageName}"
+                                def backendImage = docker.build(imageName, '.')
 
-            docker tag my-frontend:latest 889818960214.dkr.ecr.$AWS_REGION.amazonaws.com/my-frontend:latest
-            docker tag my-backend:latest 889818960214.dkr.ecr.$AWS_REGION.amazonaws.com/my-backend:latest
+                                echo "Scanning Backend image with Trivy..."
+                                // Fail the build if any high or critical vulnerabilities are found
+                                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
 
-            docker push 889818960214.dkr.ecr.$AWS_REGION.amazonaws.com/my-frontend:latest
-            docker push 889818960214.dkr.ecr.$AWS_REGION.amazonaws.com/my-backend:latest
-          '''
+                                // Login to ECR and push the image
+                                docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${env.AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                                    echo "Pushing Backend image to ECR..."
+                                    backendImage.push()
+                                }
+                            }
+                        }
+                    }
+                }
+                stage('Frontend') {
+                    steps {
+                        dir('frontend') { // Work inside the 'frontend' directory
+                            script {
+                                def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-frontend-${env.BUILD_ID}"
+                                
+                                echo "Building Frontend image: ${imageName}"
+                                def frontendImage = docker.build(imageName, '.')
+
+                                echo "Scanning Frontend image with Trivy..."
+                                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
+                                
+                                docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${env.AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                                    echo "Pushing Frontend image to ECR..."
+                                    frontendImage.push()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-      }
-    }
 
-    stage('Update Kubeconfig') {
-      steps {
-        sh '''
-          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
-        '''
-      }
-    }
+        // ==========================================================
+        // Stage 4: Deploy to EKS using Helm
+        // ==========================================================
+        stage('Deploy to EKS') {
+            steps {
+                script {
+                    // Use the withAWS block to automatically handle authentication
+                    withAWS(credentials: AWS_CREDENTIALS_ID, region: env.AWS_REGION) {
+                        
+                        echo "Configuring kubectl for EKS cluster: ${EKS_CLUSTER_NAME}"
+                        sh "aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${env.AWS_REGION}"
 
-    stage('Deploy K8s Resources') {
-      steps {
-        sh '''
-          kubectl apply -f k8s/aws-load-balancer-controller-service-account.yaml
-          kubectl apply -f k8s/ingress-class.yaml
-          kubectl apply -f k8s/ingress.yaml
-        '''
-      }
+                        echo "Deploying application with Helm..."
+                        // This command is idempotent: it upgrades the release if it exists, or installs it if it doesn't.
+                        // We pass the unique image tags to the Helm chart using --set.
+                        // This assumes you have a Helm chart in a './helm/my-app' directory.
+                        sh """
+                            helm upgrade --install my-app ./helm/my-app \
+                                --namespace default \
+                                --set backend.image.repository=${ECR_REGISTRY}/${ECR_REPO_NAME} \
+                                --set backend.image.tag=3tier-nodejs-backend-${env.BUILD_ID} \
+                                --set frontend.image.repository=${ECR_REGISTRY}/${ECR_REPO_NAME} \
+                                --set frontend.image.tag=3tier-nodejs-frontend-${env.BUILD_ID}
+                        """
+                    }
+                }
+            }
+        }
     }
-
-    stage('Verify Ingress') {
-      steps {
-        sh 'kubectl get ingress -A'
-      }
-    }
-  }
 }
