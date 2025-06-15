@@ -1,16 +1,16 @@
 // ===================================================================
 // Jenkinsfile (Final Production-Ready Version)
-// UPDATED: Corrected the tool type for the SonarQube Scanner.
+// UPDATED: Corrected the tool type syntax.
 // ===================================================================
 
 pipeline {
     agent any
 
-    // --- THIS IS THE CRUCIAL CORRECTION ---
-    // The tool type for SonarQube Scanner is 'hudson.plugins.sonar.SonarRunnerInstallation',
-    // not 'sonarqube'. This must match the name of the tool configured in Global Tool Configuration.
+    // --- THIS IS THE CRUCIAL SYNTAX CORRECTION ---
+    // The tool type for SonarQube Scanner, because it contains dots,
+    // must be enclosed in single quotes to be treated as a single string.
     tools {
-        hudson.plugins.sonar.SonarRunnerInstallation 'SonarScanner-latest'
+        'hudson.plugins.sonar.SonarRunnerInstallation' 'SonarScanner-latest'
     }
     // ------------------------------------
 
