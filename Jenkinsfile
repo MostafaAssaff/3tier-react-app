@@ -1,18 +1,13 @@
 // ===================================================================
 // Jenkinsfile (Final Production-Ready Version)
-// UPDATED: Corrected the tool type syntax.
+// UPDATED: Simplified SonarQube integration for better compatibility.
 // ===================================================================
 
 pipeline {
     agent any
 
-    // --- THIS IS THE CRUCIAL SYNTAX CORRECTION ---
-    // The tool type for SonarQube Scanner, because it contains dots,
-    // must be enclosed in single quotes to be treated as a single string.
-    tools {
-        'hudson.plugins.sonar.SonarRunnerInstallation' 'SonarScanner-latest'
-    }
-    // ------------------------------------
+    // We no longer need the 'tools' directive here.
+    // We will define the SonarScanner home as an environment variable.
 
     environment {
         AWS_REGION        = 'us-west-2'
@@ -21,7 +16,12 @@ pipeline {
         EKS_CLUSTER_NAME  = 'my-eks-cluster'
         
         SONAR_CREDENTIALS = credentials('sonar-token')
-        AWS_CREDENTIALS_ID = 'aws-credentials' 
+        AWS_CREDENTIALS_ID = 'aws-credentials'
+        
+        // --- THIS IS THE NEW APPROACH ---
+        // We get the path to the SonarScanner tool that Jenkins manages.
+        // 'SonarScanner-latest' must match the name you configured in the Tools section.
+        SONAR_SCANNER_HOME = tool 'SonarScanner-latest'
     }
 
     stages {
@@ -38,9 +38,10 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 script {
-                    // Because of the 'tools' directive above, Jenkins now knows what 'sonar-scanner' means.
+                    // Use the SonarQube configuration defined in Jenkins System settings
                     withSonarQubeEnv('MySonarQubeServer') { 
-                        sh 'sonar-scanner'
+                        // We now call the scanner using its full path, which is guaranteed to work.
+                        sh "${SONAR_SCANNER_HOME}/bin/sonar-scanner"
                     }
                 }
             }
