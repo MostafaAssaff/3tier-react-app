@@ -20,7 +20,9 @@ pipeline {
 
         stage('SonarQube Analysis') {
             when {
-                not { params.SKIP_SONAR }
+                not { 
+                    params.SKIP_SONAR == true
+                }
             }
             steps {
                 withSonarQubeEnv('MySonarQubeServer') {
@@ -31,7 +33,9 @@ pipeline {
 
         stage('Quality Gate') {
             when {
-                not { params.SKIP_SONAR }
+                not { 
+                    params.SKIP_SONAR == true
+                }
             }
             steps {
                 script {
@@ -157,7 +161,7 @@ pipeline {
                                     """
 
                                     // Security scan (if not skipped)
-                                    if (!params.SKIP_SECURITY_SCAN) {
+                                    if (params.SKIP_SECURITY_SCAN != true) {
                                         echo "🔒 Running security scan..."
                                         sh """
                                             trivy image --exit-code 0 --severity HIGH,CRITICAL ${imageName} || {
@@ -213,7 +217,7 @@ pipeline {
                                     def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-frontend-${env.BUILD_ID}"
                                     def frontendImage = docker.build(imageName, '.')
 
-                                    if (!params.SKIP_SECURITY_SCAN) {
+                                    if (params.SKIP_SECURITY_SCAN != true) {
                                         sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${imageName} || echo 'Security scan completed with warnings'"
                                     }
 
