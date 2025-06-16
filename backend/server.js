@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require('cors');
 const mongoose = require("mongoose");
+const helmet = require('helmet');  // NEW
 const port = 3001;
 const routes = require("./routes");
 
@@ -14,9 +15,15 @@ async function main() {
 
   const app = express();
 
-  // 👇 Enable CORS only for specific origin (replace with your frontend)
+  // 🔐 Secure HTTP headers
+  app.use(helmet());
+
+  // 🛑 Disable fingerprinting via headers
+  app.disable('x-powered-by');
+
+  // 🎯 Restrict CORS to specific origin
   const corsOptions = {
-    origin: 'http://localhost:3000', // ✅ replace with your frontend domain in prod
+    origin: 'http://localhost:3000', // replace with frontend domain in production
     optionsSuccessStatus: 200
   };
   app.use(cors(corsOptions));
