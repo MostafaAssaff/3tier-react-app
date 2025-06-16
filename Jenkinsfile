@@ -48,7 +48,15 @@ pipeline {
                     steps {
                         dir('backend') {
                             script {
-                                sh 'npm ci || npm install'
+                                // Handle missing or invalid package-lock.json
+                                sh '''
+                                    if [ ! -f package-lock.json ]; then
+                                        echo "🔧 package-lock.json not found. Running npm install to generate it."
+                                        npm install
+                                    fi
+
+                                    npm ci || npm install
+                                '''
 
                                 def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:backend-${env.BUILD_ID}"
                                 def backendImage = docker.build(imageName, '.')
@@ -73,7 +81,16 @@ pipeline {
                     steps {
                         dir('frontend') {
                             script {
-                                sh 'npm ci || npm install'
+                                // Handle missing or invalid package-lock.json
+                                sh '''
+                                    if [ ! -f package-lock.json ]; then
+                                        echo "🔧 package-lock.json not found. Running npm install to generate it."
+                                        npm install
+                                    fi
+
+                                    npm ci || npm install
+                                '''
+
                                 sh 'export NODE_OPTIONS=--openssl-legacy-provider && npm run build'
 
                                 def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:frontend-${env.BUILD_ID}"
