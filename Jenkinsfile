@@ -12,7 +12,6 @@ pipeline {
     }
 
     stages {
-
         stage('Checkout') {
             steps {
                 echo "🔄 Checking out code from branch: ${env.BRANCH_NAME}"
@@ -39,12 +38,6 @@ pipeline {
         stage('Build, Scan & Push Images') {
             parallel {
                 stage('Build Backend') {
-                    agent {
-                        docker {
-                            image 'node:18-alpine'
-                            args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
-                        }
-                    }
                     steps {
                         dir('backend') {
                             script {
@@ -72,12 +65,6 @@ pipeline {
                 }
 
                 stage('Build Frontend') {
-                    agent {
-                        docker {
-                            image 'node:18-alpine'
-                            args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
-                        }
-                    }
                     steps {
                         dir('frontend') {
                             script {
