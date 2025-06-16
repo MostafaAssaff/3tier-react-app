@@ -2,20 +2,20 @@ pipeline {
     agent any
 
     environment {
-        AWS_REGION        = 'us-west-2'
-        ECR_REGISTRY      = '889818960214.dkr.ecr.us-west-2.amazonaws.com'
-        ECR_REPO_NAME     = 'my-app-repo'
-        EKS_CLUSTER_NAME  = 'my-eks-cluster'
+        AWS_REGION         = 'us-west-2'
+        ECR_REGISTRY       = '889818960214.dkr.ecr.us-west-2.amazonaws.com'
+        ECR_REPO_NAME      = 'my-app-repo'
+        EKS_CLUSTER_NAME   = 'my-eks-cluster'
 
-        AWS_CREDENTIALS_ID  = 'aws-credentials'
-        SONAR_SCANNER_HOME  = tool 'SonarScanner-latest'
+        AWS_CREDENTIALS_ID = 'aws-credentials'
+        SONAR_SCANNER_HOME = tool 'SonarScanner-latest'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                echo "Checking out code from branch: ${env.BRANCH_NAME}"
+                echo "🔄 Checking out code from branch: ${env.BRANCH_NAME}"
                 checkout scm
             }
         }
@@ -40,6 +40,12 @@ pipeline {
             parallel {
 
                 stage('Backend') {
+                    agent {
+                        docker {
+                            image 'node:18-alpine'
+                            args '-v /var/run/docker.sock:/var/run/docker.sock'
+                        }
+                    }
                     steps {
                         dir('backend') {
                             script {
@@ -50,7 +56,7 @@ pipeline {
 
                                 sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
 
-                                docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${env.AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                                docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${AWS_REGION}:${AWS_CREDENTIALS_ID}") {
                                     backendImage.push()
                                 }
                             }
@@ -59,6 +65,12 @@ pipeline {
                 }
 
                 stage('Frontend') {
+                    agent {
+                        docker {
+                            image 'node:18-alpine'
+                            args '-v /var/run/docker.sock:/var/run/docker.sock'
+                        }
+                    }
                     steps {
                         dir('frontend') {
                             script {
@@ -70,7 +82,7 @@ pipeline {
 
                                 sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
 
-                                docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${env.AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                                docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${AWS_REGION}:${AWS_CREDENTIALS_ID}") {
                                     frontendImage.push()
                                 }
                             }
