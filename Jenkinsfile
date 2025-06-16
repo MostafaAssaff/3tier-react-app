@@ -1,15 +1,13 @@
 // ===================================================================
 // Jenkinsfile (Final Production-Ready Version)
-// UPDATED: Corrected the 'timeout' unit from 'h' to 'HOURS'.
+// UPDATED: Using a more robust method to call the SonarQube Scanner.
 // ===================================================================
 
 pipeline {
     agent any
 
-    tools {
-        // The tool type must be enclosed in quotes because it contains dots.
-        'hudson.plugins.sonar.SonarRunnerInstallation' 'SonarScanner-latest'
-    }
+    // We no longer need the 'tools' directive here.
+    // Instead, we will define the SonarScanner home path as an environment variable.
 
     environment {
         AWS_REGION        = 'us-west-2'
@@ -18,7 +16,12 @@ pipeline {
         EKS_CLUSTER_NAME  = 'my-eks-cluster'
         
         SONAR_CREDENTIALS = credentials('sonar-token')
-        AWS_CREDENTIALS_ID = 'aws-credentials' 
+        AWS_CREDENTIALS_ID = 'aws-credentials'
+        
+        // --- THIS IS THE NEW, MORE ROBUST APPROACH ---
+        // We ask Jenkins for the installation path of the tool named 'SonarScanner-latest'
+        // and store it in an environment variable.
+        SONAR_SCANNER_HOME = tool 'SonarScanner-latest'
     }
 
     stages {
@@ -36,15 +39,15 @@ pipeline {
             steps {
                 script {
                     withSonarQubeEnv('MySonarQubeServer') { 
-                        sh 'sonar-scanner'
+                        // We now call the scanner using its full, absolute path.
+                        // This bypasses any issues with the PATH environment variable.
+                        sh "${SONAR_SCANNER_HOME}/bin/sonar-scanner"
                     }
                 }
             }
             post {
                 success {
                     script {
-                        // --- THIS IS THE CRUCIAL CORRECTION ---
-                        // The time unit must be in uppercase (e.g., HOURS, MINUTES, SECONDS).
                         timeout(time: 1, unit: 'HOURS') {
                             def qg = waitForQualityGate()
                             if (qg.status != 'OK') {
