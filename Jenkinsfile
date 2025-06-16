@@ -6,15 +6,14 @@ pipeline {
         ECR_REGISTRY      = '889818960214.dkr.ecr.us-west-2.amazonaws.com'
         ECR_REPO_NAME     = 'my-app-repo'
         EKS_CLUSTER_NAME  = 'my-eks-cluster'
-        
+
         SONAR_CREDENTIALS   = credentials('sonar-token')
         AWS_CREDENTIALS_ID  = 'aws-credentials'
-
-        SONAR_SCANNER_HOME = tool 'SonarScanner-latest'
+        SONAR_SCANNER_HOME  = tool 'SonarScanner-latest'
     }
 
     stages {
-        
+
         stage('Checkout') {
             steps {
                 script {
@@ -28,11 +27,8 @@ pipeline {
             steps {
                 script {
                     withSonarQubeEnv('MySonarQubeServer') {
-                        // Debugging steps to verify presence of sonar-project.properties
                         sh "ls -la"
                         sh "cat sonar-project.properties || echo 'No sonar-project.properties found!'"
-
-                        // Run scanner
                         sh "${SONAR_SCANNER_HOME}/bin/sonar-scanner"
                     }
                 }
@@ -53,12 +49,22 @@ pipeline {
 
         stage('Build, Scan & Push Images') {
             parallel {
+
                 stage('Backend') {
                     steps {
                         dir('backend') {
                             script {
+                                // 🔧 Install safe versions
+                                sh '''
+                                    npm install body-parser@1.20.3 \
+                                                cross-spawn@7.0.5 \
+                                                mongoose@6.13.6 \
+                                                path-to-regexp@1.9.0 \
+                                                qs@6.10.3 \
+                                                semver@5.7.2
+                                '''
+
                                 def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-backend-${env.BUILD_ID}"
-                                
                                 def backendImage = docker.build(imageName, '.')
 
                                 sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
@@ -70,16 +76,26 @@ pipeline {
                         }
                     }
                 }
+
                 stage('Frontend') {
                     steps {
                         dir('frontend') {
                             script {
+                                // 🔧 Install safe versions
+                                sh '''
+                                    npm install body-parser@1.20.3 \
+                                                cross-spawn@7.0.5 \
+                                                mongoose@6.13.6 \
+                                                path-to-regexp@1.9.0 \
+                                                qs@6.10.3 \
+                                                semver@5.7.2
+                                '''
+
                                 def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-frontend-${env.BUILD_ID}"
-                                
                                 def frontendImage = docker.build(imageName, '.')
 
                                 sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
-                                
+
                                 docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${env.AWS_REGION}:${AWS_CREDENTIALS_ID}") {
                                     frontendImage.push()
                                 }
@@ -94,7 +110,7 @@ pipeline {
             steps {
                 script {
                     withAWS(credentials: AWS_CREDENTIALS_ID, region: env.AWS_REGION) {
-                        
+
                         sh "aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${env.AWS_REGION}"
 
                         sh """
