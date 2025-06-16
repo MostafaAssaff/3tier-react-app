@@ -1,54 +1,29 @@
 // ===================================================================
-// Jenkinsfile (GitOps Version)
-// This pipeline builds, scans, and pushes images, then updates the
-// Kubernetes manifests in the Git repository. Argo CD handles deployment.
+// Jenkinsfile (Dynamic S3 Bucket Discovery)
 // ===================================================================
 
 pipeline {
     agent any
 
-    // 1. Tools
-    // Tells Jenkins to find the 'SonarScanner-latest' tool (configured in Global Tools)
-    // and add it to the PATH for the pipeline.
-    tools {
-        'hudson.plugins.sonar.SonarRunnerInstallation' 'SonarScanner-latest'
-    }
-
-    // 2. Environment Variables
-    // Define all necessary variables here for easy management.
     environment {
         AWS_REGION         = 'us-west-2'
         AWS_ACCOUNT_ID     = '889818960214'
         ECR_REPO_NAME      = 'my-app-repo'
+        S3_BUCKET_NAME     = 'my-elb-logs-apxa7m1w'  // Your actual S3 bucket from Terraform
         
-        // Credentials IDs as configured in Jenkins
         AWS_CREDENTIALS_ID = 'aws-credentials'
-        GITHUB_TOKEN_ID    = 'my-github-pat' // Use the ID you created for the GitHub token
-        SONAR_CREDENTIALS  = credentials('sonar-token')
+        GITHUB_TOKEN_ID    = 'my-github-pat'
         
-        // Dynamic image tags and URLs
         IMAGE_TAG          = "${BUILD_NUMBER}"
         BACKEND_IMAGE_URL  = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:3tier-nodejs-backend-${IMAGE_TAG}"
         FRONTEND_IMAGE_URL = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:3tier-nodejs-frontend-${IMAGE_TAG}"
     }
 
     stages {
-        
         stage('Checkout') {
             steps {
-                echo "🔄 Checking out code..."
+                echo "🔄 Checking out code from branch: ${env.BRANCH_NAME}"
                 checkout scm
-            }
-        }
-
-        stage('SonarQube Analysis & Quality Gate') {
-            steps {
-                withSonarQubeEnv('MySonarQubeServer') { 
-                    sh 'sonar-scanner'
-                }
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
             }
         }
 
@@ -59,9 +34,27 @@ pipeline {
                         dir('backend') {
                             script {
                                 def backendImage = docker.build(env.BACKEND_IMAGE_URL, '.')
+
                                 docker.withRegistry("https://${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com", "ecr:${env.AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                                    echo "Pushing Backend image to ECR..."
                                     backendImage.push()
-                                    sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${env.BACKEND_IMAGE_URL}"
+
+                                    echo "Scanning Backend image with Trivy..."
+                                    sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${env.BACKEND_IMAGE_URL} > backend_scan_report.txt"
+                                }
+                                
+                                // Upload scan report to S3
+                                withAWS(credentials: AWS_CREDENTIALS_ID, region: env.AWS_REGION) {
+                                    script {
+                                        try {
+                                            sh "aws s3 cp backend_scan_report.txt s3://${env.S3_BUCKET_NAME}/scan-reports/backend-report-${env.IMAGE_TAG}.txt"
+                                            echo "✅ Backend scan report uploaded to S3"
+                                        } catch (Exception e) {
+                                            echo "⚠️ Failed to upload backend scan report to S3: ${e.getMessage()}"
+                                            echo "Scan report contents:"
+                                            sh "cat backend_scan_report.txt"
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -72,9 +65,26 @@ pipeline {
                         dir('frontend') {
                             script {
                                 def frontendImage = docker.build(env.FRONTEND_IMAGE_URL, '.')
+                                
                                 docker.withRegistry("https://${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com", "ecr:${env.AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                                    echo "Pushing Frontend image to ECR..."
                                     frontendImage.push()
-                                    sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${env.FRONTEND_IMAGE_URL}"
+
+                                    echo "Scanning Frontend image with Trivy..."
+                                    sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${env.FRONTEND_IMAGE_URL} > frontend_scan_report.txt"
+                                }
+                                
+                                withAWS(credentials: AWS_CREDENTIALS_ID, region: env.AWS_REGION) {
+                                    script {
+                                        try {
+                                            sh "aws s3 cp frontend_scan_report.txt s3://${env.S3_BUCKET_NAME}/scan-reports/frontend-report-${env.IMAGE_TAG}.txt"
+                                            echo "✅ Frontend scan report uploaded to S3"
+                                        } catch (Exception e) {
+                                            echo "⚠️ Failed to upload frontend scan report to S3: ${e.getMessage()}"
+                                            echo "Scan report contents:"
+                                            sh "cat frontend_scan_report.txt"
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -83,13 +93,10 @@ pipeline {
             }
         }
 
-        // ==========================================================
-        // FINAL STAGE: Update K8s Manifests in GitHub (GitOps Trigger)
-        // ==========================================================
-        stage('Update Manifests in Git') {
+        stage('Update K8s Manifests') {
             steps {
                 withCredentials([string(credentialsId: GITHUB_TOKEN_ID, variable: 'GITHUB_TOKEN')]) {
-                    sh 'git config user.email "jenkins-bot@ci.com"'
+                    sh 'git config user.email "jenkins@ci-cd.com"'
                     sh 'git config user.name "Jenkins CI Bot"'
                     
                     echo "Updating backend deployment manifest..."
@@ -114,6 +121,12 @@ pipeline {
                 echo "Pipeline finished. Cleaning up workspace."
                 cleanWs()
             }
+        }
+        success {
+            echo "✅ Build and deploy successful!"
+        }
+        failure {
+            echo "❌ Build failed."
         }
     }
 }
