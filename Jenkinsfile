@@ -11,10 +11,6 @@ pipeline {
         SONAR_SCANNER_HOME  = tool 'SonarScanner-latest'
     }
 
-    tools {
-        nodejs 'NodeJS-18'
-    }
-
     stages {
 
         stage('Checkout') {
@@ -27,19 +23,15 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('MySonarQubeServer') {
-                    sh "ls -la"
-                    sh "cat sonar-project.properties || echo 'No sonar-project.properties found!'"
                     sh "${SONAR_SCANNER_HOME}/bin/sonar-scanner"
                 }
             }
-            post {
-                success {
-                    timeout(time: 5, unit: 'MINUTES') {
-                        def qg = waitForQualityGate()
-                        if (qg.status != 'OK') {
-                            error "Pipeline aborted due to SonarQube Quality Gate failure: ${qg.status}"
-                        }
-                    }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
@@ -53,7 +45,7 @@ pipeline {
                             script {
                                 sh 'npm ci || npm install'
 
-                                def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-backend-${env.BUILD_ID}"
+                                def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:backend-${env.BUILD_ID}"
                                 def backendImage = docker.build(imageName, '.')
 
                                 sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
@@ -73,7 +65,7 @@ pipeline {
                                 sh 'npm ci || npm install'
                                 sh 'npm run build'
 
-                                def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-frontend-${env.BUILD_ID}"
+                                def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:frontend-${env.BUILD_ID}"
                                 def frontendImage = docker.build(imageName, '.')
 
                                 sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
@@ -90,20 +82,28 @@ pipeline {
 
         stage('Deploy to EKS') {
             steps {
-                withAWS(credentials: AWS_CREDENTIALS_ID, region: env.AWS_REGION) {
-
-                    sh "aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${env.AWS_REGION}"
+                withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
+                    sh "aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${AWS_REGION}"
 
                     sh """
                         helm upgrade --install my-app ./helm/my-app \
                             --namespace default \
                             --set backend.image.repository=${ECR_REGISTRY}/${ECR_REPO_NAME} \
-                            --set backend.image.tag=3tier-nodejs-backend-${env.BUILD_ID} \
+                            --set backend.image.tag=backend-${env.BUILD_ID} \
                             --set frontend.image.repository=${ECR_REGISTRY}/${ECR_REPO_NAME} \
-                            --set frontend.image.tag=3tier-nodejs-frontend-${env.BUILD_ID}
+                            --set frontend.image.tag=frontend-${env.BUILD_ID}
                     """
                 }
             }
+        }
+    }
+
+    post {
+        failure {
+            echo "❌ Build failed."
+        }
+        success {
+            echo "✅ Build and deploy successful!"
         }
     }
 }
