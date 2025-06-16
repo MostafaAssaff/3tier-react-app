@@ -20,9 +20,7 @@ pipeline {
 
         stage('SonarQube Analysis') {
             when {
-                not { 
-                    params.SKIP_SONAR == true
-                }
+                expression { !params.SKIP_SONAR }
             }
             steps {
                 withSonarQubeEnv('MySonarQubeServer') {
@@ -33,9 +31,7 @@ pipeline {
 
         stage('Quality Gate') {
             when {
-                not { 
-                    params.SKIP_SONAR == true
-                }
+                expression { !params.SKIP_SONAR }
             }
             steps {
                 script {
