@@ -15,7 +15,7 @@ spec:
       containers:
       - name: backend-container
         # IMPORTANT: The Jenkinsfile will replace 'placeholder' with the correct image tag.
-        image: 889818960214.dkr.ecr.us-west-2.amazonaws.com/my-app-repo:3tier-nodejs-backend-64
+        image: 889818960214.dkr.ecr.us-west-2.amazonaws.com/my-app-repo:3tier-nodejs-backend-65
         ports:
         - containerPort: 3001
 ---
