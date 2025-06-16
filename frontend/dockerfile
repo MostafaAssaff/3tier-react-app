@@ -4,12 +4,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 COPY . .
-# Important legacy flag
 ENV NODE_OPTIONS=--openssl-legacy-provider
 RUN npm run build
 
-# Step 2 - Use latest nginx:alpine which should have the fix
-FROM nginx:alpine@sha256:latest
+# Step 2 - استخدم أحدث إصدار وحدّث libxml2
+FROM nginx:alpine
 RUN apk update && apk upgrade libxml2
 COPY --from=build /app/build /usr/share/nginx/html
 EXPOSE 80
