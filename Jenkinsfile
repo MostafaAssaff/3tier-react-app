@@ -19,6 +19,9 @@ pipeline {
         }
 
         stage('SonarQube Analysis') {
+            when {
+                not { params.SKIP_SONAR }
+            }
             steps {
                 withSonarQubeEnv('MySonarQubeServer') {
                     sh "${SONAR_SCANNER_HOME}/bin/sonar-scanner"
@@ -27,6 +30,9 @@ pipeline {
         }
 
         stage('Quality Gate') {
+            when {
+                not { params.SKIP_SONAR }
+            }
             steps {
                 script {
                     try {
@@ -34,23 +40,10 @@ pipeline {
                             def qg = waitForQualityGate()
                             if (qg.status != 'OK') {
                                 echo "⚠️ Quality Gate Status: ${qg.status}"
-                                echo "🔍 Quality Gate Details:"
-                                echo "- Status: ${qg.status}"
-                                
-                                // Get more details about quality gate failure
-                                sh '''
-                                    echo "📊 SonarQube Quality Gate Report:"
-                                    echo "================================"
-                                    curl -s -u $SONAR_AUTH_TOKEN: \
-                                    "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
-                                    | jq '.' || echo "Could not fetch detailed report"
-                                '''
-                                
-                                // Allow user to decide: fail pipeline or continue with warning
                                 if (params.FAIL_ON_QUALITY_GATE == true) {
                                     error("❌ Quality Gate failed: ${qg.status}")
                                 } else {
-                                    echo "⚠️ Quality Gate failed but continuing pipeline as FAIL_ON_QUALITY_GATE=false"
+                                    echo "⚠️ Quality Gate failed but continuing pipeline"
                                     currentBuild.result = 'UNSTABLE'
                                 }
                             } else {
@@ -58,11 +51,10 @@ pipeline {
                             }
                         }
                     } catch (Exception e) {
-                        echo "⚠️ Quality Gate check failed with error: ${e.getMessage()}"
+                        echo "⚠️ Quality Gate check failed: ${e.getMessage()}"
                         if (params.FAIL_ON_QUALITY_GATE == true) {
                             error("Quality Gate check failed")
                         } else {
-                            echo "⚠️ Continuing pipeline despite Quality Gate error"
                             currentBuild.result = 'UNSTABLE'
                         }
                     }
@@ -74,48 +66,130 @@ pipeline {
             parallel {
                 stage('Build Backend') {
                     steps {
-                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                            dir('backend') {
-                                script {
-                                    try {
-                                        sh '''
-                                            echo "🔧 Setting up Node.js dependencies..."
-                                            if [ ! -f package-lock.json ]; then
-                                                echo "🔧 package-lock.json not found. Running npm install to generate it."
-                                                npm install
-                                            fi
-                                            npm ci || npm install
-                                        '''
+                        dir('backend') {
+                            script {
+                                try {
+                                    // Check backend dependencies and configuration
+                                    sh '''
+                                        echo "🔍 Backend Pre-build Analysis:"
+                                        echo "============================="
+                                        
+                                        # Check if package.json exists
+                                        if [ -f package.json ]; then
+                                            echo "✅ package.json found"
+                                            echo "📋 Package.json content:"
+                                            cat package.json | head -20
+                                        else
+                                            echo "❌ package.json not found!"
+                                            exit 1
+                                        fi
+                                        
+                                        # Check if Dockerfile exists
+                                        if [ -f Dockerfile ]; then
+                                            echo "✅ Dockerfile found"
+                                            echo "📋 Dockerfile content:"
+                                            cat Dockerfile
+                                        else
+                                            echo "❌ Dockerfile not found!"
+                                            exit 1
+                                        fi
+                                        
+                                        # Install dependencies
+                                        echo "📦 Installing dependencies..."
+                                        if [ ! -f package-lock.json ]; then
+                                            echo "🔧 Generating package-lock.json"
+                                            npm install
+                                        fi
+                                        npm ci || npm install
+                                        
+                                        # Check for common issues
+                                        echo "🔍 Checking for common backend issues:"
+                                        if [ -f app.js ] || [ -f index.js ] || [ -f server.js ]; then
+                                            echo "✅ Main application file found"
+                                        else
+                                            echo "⚠️ No main application file found (app.js, index.js, server.js)"
+                                        fi
+                                        
+                                        # Test if the app can start (quick check)
+                                        echo "🧪 Testing backend startup (timeout 10s)..."
+                                        timeout 10s npm start &
+                                        sleep 3
+                                        if pgrep -f "node" > /dev/null; then
+                                            echo "✅ Backend starts successfully"
+                                            pkill -f "node" || true
+                                        else
+                                            echo "⚠️ Backend might have startup issues"
+                                        fi
+                                    '''
 
-                                        def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-backend-${env.BUILD_ID}"
-                                        echo "🏗️ Building backend image: ${imageName}"
-                                        def backendImage = docker.build(imageName, '.')
+                                    def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-backend-${env.BUILD_ID}"
+                                    echo "🏗️ Building backend image: ${imageName}"
+                                    
+                                    // Build with more verbose output
+                                    def backendImage = docker.build(imageName, '--no-cache .')
 
-                                        // Security scan with better error handling
+                                    // Test the built image
+                                    echo "🧪 Testing built backend image..."
+                                    sh """
+                                        echo "Testing image: ${imageName}"
+                                        
+                                        # Run container for 10 seconds to check if it starts
+                                        docker run -d --name backend-test-${env.BUILD_ID} ${imageName} || {
+                                            echo "❌ Container failed to start"
+                                            docker logs backend-test-${env.BUILD_ID} || true
+                                            exit 1
+                                        }
+                                        
+                                        # Wait a bit and check if container is still running
+                                        sleep 5
+                                        if docker ps | grep backend-test-${env.BUILD_ID}; then
+                                            echo "✅ Backend container is running"
+                                            docker logs backend-test-${env.BUILD_ID}
+                                        else
+                                            echo "❌ Backend container stopped unexpectedly"
+                                            echo "📋 Container logs:"
+                                            docker logs backend-test-${env.BUILD_ID} || true
+                                        fi
+                                        
+                                        # Cleanup test container
+                                        docker stop backend-test-${env.BUILD_ID} || true
+                                        docker rm backend-test-${env.BUILD_ID} || true
+                                    """
+
+                                    // Security scan (if not skipped)
+                                    if (!params.SKIP_SECURITY_SCAN) {
                                         echo "🔒 Running security scan..."
                                         sh """
                                             trivy image --exit-code 0 --severity HIGH,CRITICAL ${imageName} || {
                                                 echo "⚠️ Security scan found issues but continuing..."
-                                                exit 0
                                             }
                                         """
-
-                                        // Push to ECR
-                                        echo "📤 Pushing backend image to ECR..."
-                                        docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${AWS_REGION}:${AWS_CREDENTIALS_ID}") {
-                                            backendImage.push()
-                                            backendImage.push("3tier-nodejs-backend-latest")
-                                        }
-                                        
-                                        env.BACKEND_SUCCESS = 'true'
-                                        env.BACKEND_IMAGE_TAG = "3tier-nodejs-backend-${env.BUILD_ID}"
-                                        echo "✅ Backend build completed successfully!"
-                                        
-                                    } catch (Exception e) {
-                                        echo "❌ Backend build failed: ${e.getMessage()}"
-                                        env.BACKEND_SUCCESS = 'false'
-                                        throw e
                                     }
+
+                                    // Push to ECR
+                                    echo "📤 Pushing backend image to ECR..."
+                                    docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                                        backendImage.push()
+                                        backendImage.push("3tier-nodejs-backend-latest")
+                                    }
+                                    
+                                    env.BACKEND_SUCCESS = 'true'
+                                    env.BACKEND_IMAGE_TAG = "3tier-nodejs-backend-${env.BUILD_ID}"
+                                    echo "✅ Backend build completed successfully!"
+                                    
+                                } catch (Exception e) {
+                                    echo "❌ Backend build failed: ${e.getMessage()}"
+                                    env.BACKEND_SUCCESS = 'false'
+                                    
+                                    // Additional debugging
+                                    sh '''
+                                        echo "🔍 Backend build debugging info:"
+                                        echo "Docker images:"
+                                        docker images | grep backend || true
+                                        echo "Docker processes:"
+                                        docker ps -a | grep backend || true
+                                    '''
+                                    throw e
                                 }
                             }
                         }
@@ -124,51 +198,38 @@ pipeline {
 
                 stage('Build Frontend') {
                     steps {
-                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                            dir('frontend') {
-                                script {
-                                    try {
-                                        sh '''
-                                            echo "🔧 Setting up Node.js dependencies..."
-                                            if [ ! -f package-lock.json ]; then
-                                                echo "🔧 package-lock.json not found. Running npm install to generate it."
-                                                npm install
-                                            fi
-                                            npm ci || npm install
-                                        '''
+                        dir('frontend') {
+                            script {
+                                try {
+                                    sh '''
+                                        echo "🔧 Setting up frontend dependencies..."
+                                        if [ ! -f package-lock.json ]; then
+                                            npm install
+                                        fi
+                                        npm ci || npm install
+                                        export NODE_OPTIONS=--openssl-legacy-provider && npm run build
+                                    '''
 
-                                        echo "🏗️ Building frontend application..."
-                                        sh 'export NODE_OPTIONS=--openssl-legacy-provider && npm run build'
+                                    def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-frontend-${env.BUILD_ID}"
+                                    def frontendImage = docker.build(imageName, '.')
 
-                                        def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-frontend-${env.BUILD_ID}"
-                                        echo "🏗️ Building frontend image: ${imageName}"
-                                        def frontendImage = docker.build(imageName, '.')
-
-                                        // Security scan
-                                        echo "🔒 Running security scan..."
-                                        sh """
-                                            trivy image --exit-code 0 --severity HIGH,CRITICAL ${imageName} || {
-                                                echo "⚠️ Security scan found issues but continuing..."
-                                                exit 0
-                                            }
-                                        """
-
-                                        // Push to ECR
-                                        echo "📤 Pushing frontend image to ECR..."
-                                        docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${AWS_REGION}:${AWS_CREDENTIALS_ID}") {
-                                            frontendImage.push()
-                                            frontendImage.push("3tier-nodejs-frontend-latest")
-                                        }
-                                        
-                                        env.FRONTEND_SUCCESS = 'true'
-                                        env.FRONTEND_IMAGE_TAG = "3tier-nodejs-frontend-${env.BUILD_ID}"
-                                        echo "✅ Frontend build completed successfully!"
-                                        
-                                    } catch (Exception e) {
-                                        echo "❌ Frontend build failed: ${e.getMessage()}"
-                                        env.FRONTEND_SUCCESS = 'false'
-                                        throw e
+                                    if (!params.SKIP_SECURITY_SCAN) {
+                                        sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${imageName} || echo 'Security scan completed with warnings'"
                                     }
+
+                                    docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                                        frontendImage.push()
+                                        frontendImage.push("3tier-nodejs-frontend-latest")
+                                    }
+                                    
+                                    env.FRONTEND_SUCCESS = 'true'
+                                    env.FRONTEND_IMAGE_TAG = "3tier-nodejs-frontend-${env.BUILD_ID}"
+                                    echo "✅ Frontend build completed successfully!"
+                                    
+                                } catch (Exception e) {
+                                    echo "❌ Frontend build failed: ${e.getMessage()}"
+                                    env.FRONTEND_SUCCESS = 'false'
+                                    throw e
                                 }
                             }
                         }
@@ -186,7 +247,7 @@ pipeline {
             }
             steps {
                 script {
-                    echo "📝 Updating Kubernetes manifests with new image tags..."
+                    echo "📝 Updating Kubernetes manifests..."
                     
                     sh '''
                         mkdir -p k8s-temp
@@ -223,75 +284,163 @@ pipeline {
                 }
             }
             steps {
-                script {
-                    try {
-                        withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
-                            echo "🔐 Configuring kubectl for EKS cluster..."
+                withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
+                    script {
+                        try {
+                            echo "🔐 Configuring kubectl..."
                             sh """
                                 aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${AWS_REGION}
-                                
-                                # Test connection
-                                echo "🧪 Testing kubectl connection..."
-                                kubectl cluster-info || {
-                                    echo "❌ Failed to connect to EKS cluster"
-                                    exit 1
-                                }
+                                kubectl cluster-info
                             """
 
-                            echo "🚀 Deploying to EKS cluster..."
+                            echo "🚀 Deploying to EKS..."
                             
-                            // Deploy infrastructure components
+                            // Deploy infrastructure
                             sh '''
-                                echo "📦 Deploying infrastructure components..."
-                                kubectl apply -f k8s/aws-load-balancer-controller-service-account.yaml --validate=false || {
-                                    echo "⚠️ Failed to apply load balancer service account, but continuing..."
-                                }
-                                kubectl apply -f k8s/ingress-class.yaml --validate=false || {
-                                    echo "⚠️ Failed to apply ingress class, but continuing..."
-                                }
+                                kubectl apply -f k8s/aws-load-balancer-controller-service-account.yaml --validate=false || true
+                                kubectl apply -f k8s/ingress-class.yaml --validate=false || true
                             '''
                             
-                            // Deploy main application
+                            // Deploy application
                             sh '''
-                                echo "📦 Deploying application manifests..."
                                 kubectl apply -f k8s-temp/deployment-updated.yaml --validate=false
                                 
-                                echo "⏳ Waiting for deployments to be ready..."
-                                kubectl rollout status deployment/backend-deployment --timeout=300s || {
-                                    echo "⚠️ Backend deployment timeout, but continuing..."
-                                }
-                                kubectl rollout status deployment/frontend-deployment --timeout=300s || {
-                                    echo "⚠️ Frontend deployment timeout, but continuing..."
-                                }
+                                echo "⏳ Waiting for deployments..."
+                                kubectl rollout status deployment/frontend-deployment --timeout=300s || echo "Frontend deployment timeout"
+                                kubectl rollout status deployment/backend-deployment --timeout=300s || echo "Backend deployment timeout"
                             '''
                             
-                            // Verify deployment
+                            // Enhanced debugging for backend issues
                             sh '''
-                                echo "📊 Deployment Status:"
-                                echo "==================="
+                                echo "🔍 Detailed Backend Debugging:"
+                                echo "============================="
                                 
-                                kubectl get pods -l 'app in (backend,frontend)' -o wide || true
-                                kubectl get services -l 'app in (backend,frontend)' || true
-                                kubectl get ingress my-app-ingress || true
+                                # Get pod status
+                                echo "📊 Pod Status:"
+                                kubectl get pods -l app=backend -o wide
                                 
-                                # Get load balancer URL
+                                # Get failed pods
+                                FAILED_PODS=$(kubectl get pods -l app=backend --field-selector=status.phase!=Running -o name 2>/dev/null)
+                                
+                                if [ -n "$FAILED_PODS" ]; then
+                                    echo ""
+                                    echo "❌ Failed Backend Pods Found:"
+                                    for pod in $FAILED_PODS; do
+                                        echo "--- Debugging $pod ---"
+                                        kubectl describe $pod
+                                        echo ""
+                                        echo "📋 Logs for $pod:"
+                                        kubectl logs $pod --previous || kubectl logs $pod || echo "No logs available"
+                                        echo ""
+                                    done
+                                    
+                                    echo "🔍 Recent Events:"
+                                    kubectl get events --sort-by=.metadata.creationTimestamp --field-selector involvedObject.kind=Pod | grep backend | tail -10
+                                    
+                                    echo ""
+                                    echo "🔍 Backend Service Status:"
+                                    kubectl get service backend-service -o yaml || echo "Backend service not found"
+                                else
+                                    echo "✅ All backend pods are running"
+                                fi
+                                
+                                echo ""
+                                echo "📊 All Services:"
+                                kubectl get services
+                                
+                                echo ""
+                                echo "📊 Ingress Status:"
+                                kubectl get ingress my-app-ingress -o yaml
+                                
+                                # Test backend connectivity
+                                echo ""
+                                echo "🧪 Testing Backend Connectivity:"
+                                BACKEND_POD=$(kubectl get pods -l app=backend -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+                                if [ -n "$BACKEND_POD" ] && kubectl get pod $BACKEND_POD | grep Running; then
+                                    echo "Testing backend pod: $BACKEND_POD"
+                                    kubectl exec $BACKEND_POD -- curl -f http://localhost:5000/health || echo "Backend health check failed"
+                                else
+                                    echo "No running backend pod found for testing"
+                                fi
+                            '''
+                            
+                            // Get load balancer URL
+                            sh '''
                                 LB_HOSTNAME=$(kubectl get ingress my-app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
                                 if [ -n "$LB_HOSTNAME" ]; then
                                     echo "🌐 Application URL: http://$LB_HOSTNAME"
+                                    echo "🧪 Testing frontend access..."
+                                    curl -I "http://$LB_HOSTNAME" || echo "Frontend access test failed"
+                                    echo "🧪 Testing backend API access..."
+                                    curl -I "http://$LB_HOSTNAME/api" || echo "Backend API access test failed"
                                 else
-                                    echo "⏳ Load balancer is still being provisioned..."
+                                    echo "⏳ Load balancer not ready yet"
                                 fi
                             '''
+                            
+                        } catch (Exception e) {
+                            echo "❌ Deployment error: ${e.getMessage()}"
+                            currentBuild.result = 'UNSTABLE'
                         }
-                    } catch (Exception e) {
-                        echo "❌ Deployment failed: ${e.getMessage()}"
-                        currentBuild.result = 'UNSTABLE'
+                    }
+                }
+            }
+        }
+
+        stage('Post-Deploy Validation') {
+            when {
+                anyOf {
+                    environment name: 'FRONTEND_SUCCESS', value: 'true'
+                    environment name: 'BACKEND_SUCCESS', value: 'true'
+                }
+            }
+            steps {
+                withAWS(credentials: AWS_CREDENTIALS_ID, region: AWS_REGION) {
+                    script {
+                        echo "🔍 Post-deployment validation..."
                         
-                        // Try to get debugging information
                         sh '''
-                            echo "🔍 Debugging information:"
-                            kubectl get events --sort-by=.metadata.creationTimestamp | tail -20 || true
-                            kubectl describe pods -l 'app in (backend,frontend)' | tail -50 || true
+                            echo "📊 Final Application Status:"
+                            echo "=========================="
+                            
+                            # Wait a bit for pods to stabilize
+                            sleep 30
+                            
+                            # Check pod health
+                            echo "Pod Status:"
+                            kubectl get pods -l 'app in (backend,frontend)' -o wide
+                            
+                            # Check services
+                            echo ""
+                            echo "Service Status:"
+                            kubectl get services -l 'app in (backend,frontend)'
+                            
+                            # Check if backend is actually working
+                            BACKEND_PODS=$(kubectl get pods -l app=backend --field-selector=status.phase=Running -o name 2>/dev/null)
+                            RUNNING_COUNT=$(echo "$BACKEND_PODS" | wc -l)
+                            
+                            echo ""
+                            echo "✅ Running backend pods: $RUNNING_COUNT"
+                            
+                            if [ "$RUNNING_COUNT" -gt 0 ]; then
+                                echo "🎉 Backend deployment successful!"
+                            else
+                                echo "❌ Backend deployment failed - no running pods"
+                                echo "🔧 Suggested fixes:"
+                                echo "1. Check backend application logs"
+                                echo "2. Verify backend Docker image"
+                                echo "3. Check environment variables"
+                                echo "4. Verify database connectivity"
+                            fi
+                            
+                            # Final URL check
+                            LB_HOSTNAME=$(kubectl get ingress my-app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+                            if [ -n "$LB_HOSTNAME" ]; then
+                                echo ""
+                                echo "🌐 Application URLs:"
+                                echo "Frontend: http://$LB_HOSTNAME"
+                                echo "Backend API: http://$LB_HOSTNAME/api"
+                            fi
                         '''
                     }
                 }
@@ -302,72 +451,21 @@ pipeline {
     post {
         always {
             sh 'rm -rf k8s-temp || true'
-            
-            // Archive artifacts
-            archiveArtifacts artifacts: 'k8s-temp/*.yaml', allowEmptyArchive: true
         }
         
         failure {
             echo "❌ Pipeline failed."
-            script {
-                // Send notification or create ticket
-                sh '''
-                    echo "🔍 Final troubleshooting information:"
-                    echo "==================================="
-                    
-                    # Show system information
-                    echo "🖥️ System Information:"
-                    docker --version || true
-                    kubectl version --client || true
-                    aws --version || true
-                    
-                    echo ""
-                    echo "📊 Build Summary:"
-                    echo "Backend Success: ${BACKEND_SUCCESS:-false}"
-                    echo "Frontend Success: ${FRONTEND_SUCCESS:-false}"
-                '''
-            }
         }
         
         success {
             echo "✅ Pipeline completed successfully!"
-            sh '''
-                echo "🎉 Deployment Summary:"
-                echo "===================="
-                echo "Backend Success: ${BACKEND_SUCCESS:-false}"
-                echo "Frontend Success: ${FRONTEND_SUCCESS:-false}"
-                
-                # Final application status
-                kubectl get all -l 'app in (backend,frontend)' || true
-                
-                LB_HOSTNAME=$(kubectl get ingress my-app-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-                if [ -n "$LB_HOSTNAME" ]; then
-                    echo ""
-                    echo "🌐 Your application is available at:"
-                    echo "Frontend: http://$LB_HOSTNAME"
-                    echo "Backend API: http://$LB_HOSTNAME/api"
-                fi
-            '''
         }
         
         unstable {
             echo "⚠️ Pipeline completed with warnings."
-            emailext (
-                subject: "⚠️ Jenkins Pipeline Warning: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
-                body: """
-                Pipeline completed with warnings.
-                
-                Build: ${env.BUILD_URL}
-                Branch: ${env.BRANCH_NAME}
-                
-                Please check the console output for details.
-                """,
-                to: "${env.CHANGE_AUTHOR_EMAIL}"
-            )
         }
     }
     
-    // Add parameters for pipeline configuration
     parameters {
         booleanParam(
             name: 'FAIL_ON_QUALITY_GATE',
@@ -379,10 +477,10 @@ pipeline {
             defaultValue: false,
             description: 'Skip Trivy security scanning'
         )
-        choice(
-            name: 'DEPLOYMENT_STRATEGY',
-            choices: ['rolling', 'blue-green', 'canary'],
-            description: 'Deployment strategy'
+        booleanParam(
+            name: 'SKIP_SONAR',
+            defaultValue: false,
+            description: 'Skip SonarQube analysis completely'
         )
     }
 }
