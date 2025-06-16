@@ -37,60 +37,61 @@ pipeline {
         }
 
         stage('Build, Scan & Push Images') {
-            parallel {
+    parallel {
 
-                stage('Backend') {
-                    agent {
-                        docker {
-                            image 'node:18-alpine'
-                            args '-v /var/run/docker.sock:/var/run/docker.sock'
-                        }
-                    }
-                    steps {
-                        dir('backend') {
-                            script {
-                                sh 'npm ci || npm install'
-
-                                def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:backend-${env.BUILD_ID}"
-                                def backendImage = docker.build(imageName, '.')
-
-                                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
-
-                                docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${AWS_REGION}:${AWS_CREDENTIALS_ID}") {
-                                    backendImage.push()
-                                }
-                            }
-                        }
-                    }
+        stage('Backend') {
+            agent {
+                docker {
+                    image 'node:18-alpine'
+                    args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
                 }
+            }
+            steps {
+                dir('backend') {
+                    script {
+                        sh 'npm ci || npm install'
 
-                stage('Frontend') {
-                    agent {
-                        docker {
-                            image 'node:18-alpine'
-                            args '-v /var/run/docker.sock:/var/run/docker.sock'
-                        }
-                    }
-                    steps {
-                        dir('frontend') {
-                            script {
-                                sh 'npm ci || npm install'
-                                sh 'npm run build'
+                        def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:backend-${env.BUILD_ID}"
+                        def backendImage = docker.build(imageName, '.')
 
-                                def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:frontend-${env.BUILD_ID}"
-                                def frontendImage = docker.build(imageName, '.')
+                        sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
 
-                                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
-
-                                docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${AWS_REGION}:${AWS_CREDENTIALS_ID}") {
-                                    frontendImage.push()
-                                }
-                            }
+                        docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                            backendImage.push()
                         }
                     }
                 }
             }
         }
+
+        stage('Frontend') {
+            agent {
+                docker {
+                    image 'node:18-alpine'
+                    args '--user root -v /var/run/docker.sock:/var/run/docker.sock'
+                }
+            }
+            steps {
+                dir('frontend') {
+                    script {
+                        sh 'npm ci || npm install'
+                        sh 'npm run build'
+
+                        def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:frontend-${env.BUILD_ID}"
+                        def frontendImage = docker.build(imageName, '.')
+
+                        sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
+
+                        docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                            frontendImage.push()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 
         stage('Deploy to EKS') {
             steps {
