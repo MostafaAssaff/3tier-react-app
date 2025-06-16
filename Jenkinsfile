@@ -1,19 +1,18 @@
-// Jenkinsfile (GitOps Version)
-// This pipeline's final stage is to update the Kubernetes manifests in the Git repository.
+// ===================================================================
+// Jenkinsfile (Dynamic S3 Bucket Discovery)
+// ===================================================================
 
 pipeline {
     agent any
-
-    tools {
-        'hudson.plugins.sonar.SonarRunnerInstallation' 'SonarScanner-latest'
-    }
 
     environment {
         AWS_REGION         = 'us-west-2'
         AWS_ACCOUNT_ID     = '889818960214'
         ECR_REPO_NAME      = 'my-app-repo'
+        S3_BUCKET_NAME     = 'my-elb-logs-apxa7m1w'  // Your actual S3 bucket from Terraform
         
-        GITHUB_TOKEN_ID    = 'my-github-pat' // The ID of your GitHub credential
+        AWS_CREDENTIALS_ID = 'aws-credentials'
+        GITHUB_TOKEN_ID    = 'my-github-pat'
         
         IMAGE_TAG          = "${BUILD_NUMBER}"
         BACKEND_IMAGE_URL  = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:3tier-nodejs-backend-${IMAGE_TAG}"
@@ -21,17 +20,41 @@ pipeline {
     }
 
     stages {
-        
-        // (Stages for Checkout, SonarQube, Quality Gate, Build & Push remain the same...)
-        stage('CI Stages: Checkout, Scan, Build, Push') {
-             parallel {
+        stage('Checkout') {
+            steps {
+                echo "🔄 Checking out code from branch: ${env.BRANCH_NAME}"
+                checkout scm
+            }
+        }
+
+        stage('Build, Scan & Push Images') {
+            parallel {
                 stage('Backend') {
                     steps {
                         dir('backend') {
                             script {
                                 def backendImage = docker.build(env.BACKEND_IMAGE_URL, '.')
-                                docker.withRegistry("https://${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com", 'ecr:us-west-2:aws-credentials') {
+
+                                docker.withRegistry("https://${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com", "ecr:${env.AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                                    echo "Pushing Backend image to ECR..."
                                     backendImage.push()
+
+                                    echo "Scanning Backend image with Trivy..."
+                                    sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${env.BACKEND_IMAGE_URL} > backend_scan_report.txt"
+                                }
+                                
+                                // Upload scan report to S3
+                                withAWS(credentials: AWS_CREDENTIALS_ID, region: env.AWS_REGION) {
+                                    script {
+                                        try {
+                                            sh "aws s3 cp backend_scan_report.txt s3://${env.S3_BUCKET_NAME}/scan-reports/backend-report-${env.IMAGE_TAG}.txt"
+                                            echo "✅ Backend scan report uploaded to S3"
+                                        } catch (Exception e) {
+                                            echo "⚠️ Failed to upload backend scan report to S3: ${e.getMessage()}"
+                                            echo "Scan report contents:"
+                                            sh "cat backend_scan_report.txt"
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -42,8 +65,26 @@ pipeline {
                         dir('frontend') {
                             script {
                                 def frontendImage = docker.build(env.FRONTEND_IMAGE_URL, '.')
-                                docker.withRegistry("https://${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com", 'ecr:us-west-2:aws-credentials') {
+                                
+                                docker.withRegistry("https://${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com", "ecr:${env.AWS_REGION}:${AWS_CREDENTIALS_ID}") {
+                                    echo "Pushing Frontend image to ECR..."
                                     frontendImage.push()
+
+                                    echo "Scanning Frontend image with Trivy..."
+                                    sh "trivy image --exit-code 0 --severity HIGH,CRITICAL ${env.FRONTEND_IMAGE_URL} > frontend_scan_report.txt"
+                                }
+                                
+                                withAWS(credentials: AWS_CREDENTIALS_ID, region: env.AWS_REGION) {
+                                    script {
+                                        try {
+                                            sh "aws s3 cp frontend_scan_report.txt s3://${env.S3_BUCKET_NAME}/scan-reports/frontend-report-${env.IMAGE_TAG}.txt"
+                                            echo "✅ Frontend scan report uploaded to S3"
+                                        } catch (Exception e) {
+                                            echo "⚠️ Failed to upload frontend scan report to S3: ${e.getMessage()}"
+                                            echo "Scan report contents:"
+                                            sh "cat frontend_scan_report.txt"
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -52,16 +93,16 @@ pipeline {
             }
         }
 
-        // ==========================================================
-        // FINAL STAGE: Update K8s Manifests in GitHub (GitOps Trigger)
-        // ==========================================================
-        stage('Update Manifests in Git') {
+        stage('Update K8s Manifests') {
             steps {
                 withCredentials([string(credentialsId: GITHUB_TOKEN_ID, variable: 'GITHUB_TOKEN')]) {
-                    sh 'git config user.email "jenkins-bot@ci.com"'
+                    sh 'git config user.email "jenkins@ci-cd.com"'
                     sh 'git config user.name "Jenkins CI Bot"'
                     
-                    sh "sed -i 's|image: .*|image: ${env.BACKEND_IMAGE_URL}|g' ./k8s/02-backend.yaml"
+                    echo "Updating backend deployment manifest..."
+                    sh "sed -i 's|image:.*|image: ${env.BACKEND_IMAGE_URL}|g' ./k8s/02-backend.yaml"
+                    
+                    echo "Updating frontend deployment manifest..."
                     sh "sed -i 's|image:.*|image: ${env.FRONTEND_IMAGE_URL}|g' ./k8s/03-frontend.yaml"
 
                     sh 'git remote set-url origin https://${GITHUB_TOKEN}@github.com/MostafaAssaff/3tier-react-app.git'
@@ -71,6 +112,21 @@ pipeline {
                     sh 'git push origin HEAD:main'
                 }
             }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                echo "Pipeline finished. Cleaning up workspace."
+                cleanWs()
+            }
+        }
+        success {
+            echo "✅ Build and deploy successful!"
+        }
+        failure {
+            echo "❌ Build failed."
         }
     }
 }
