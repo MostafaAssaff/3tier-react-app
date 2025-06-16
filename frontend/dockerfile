@@ -1,5 +1,5 @@
+# Step 1
 FROM node:18-alpine AS build
-
 WORKDIR /app
 
 COPY package*.json ./
@@ -7,16 +7,12 @@ RUN npm install
 
 COPY . .
 
+# Important legacy flag
 ENV NODE_OPTIONS=--openssl-legacy-provider
-
 RUN npm run build
 
-FROM nginx:alpine AS final
-
+# Step 2
+FROM nginx:alpine
 COPY --from=build /app/build /usr/share/nginx/html
-
-RUN apk update && apk upgrade libxml2 && rm -rf /var/cache/apk/*
-
 EXPOSE 80
-
 CMD ["nginx", "-g", "daemon off;"]
