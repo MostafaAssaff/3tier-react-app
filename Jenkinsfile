@@ -7,40 +7,37 @@ pipeline {
         ECR_REPO_NAME     = 'my-app-repo'
         EKS_CLUSTER_NAME  = 'my-eks-cluster'
 
-        SONAR_CREDENTIALS   = credentials('sonar-token')
         AWS_CREDENTIALS_ID  = 'aws-credentials'
         SONAR_SCANNER_HOME  = tool 'SonarScanner-latest'
+    }
+
+    tools {
+        nodejs 'NodeJS-18'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                script {
-                    echo "Checking out code from branch: ${env.BRANCH_NAME}"
-                    checkout scm
-                }
+                echo "Checking out code from branch: ${env.BRANCH_NAME}"
+                checkout scm
             }
         }
 
         stage('SonarQube Analysis') {
             steps {
-                script {
-                    withSonarQubeEnv('MySonarQubeServer') {
-                        sh "ls -la"
-                        sh "cat sonar-project.properties || echo 'No sonar-project.properties found!'"
-                        sh "${SONAR_SCANNER_HOME}/bin/sonar-scanner"
-                    }
+                withSonarQubeEnv('MySonarQubeServer') {
+                    sh "ls -la"
+                    sh "cat sonar-project.properties || echo 'No sonar-project.properties found!'"
+                    sh "${SONAR_SCANNER_HOME}/bin/sonar-scanner"
                 }
             }
             post {
                 success {
-                    script {
-                        timeout(time: 5, unit: 'MINUTES') {
-                            def qg = waitForQualityGate()
-                            if (qg.status != 'OK') {
-                                error "Pipeline aborted due to SonarQube Quality Gate failure: ${qg.status}"
-                            }
+                    timeout(time: 5, unit: 'MINUTES') {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            error "Pipeline aborted due to SonarQube Quality Gate failure: ${qg.status}"
                         }
                     }
                 }
@@ -54,15 +51,7 @@ pipeline {
                     steps {
                         dir('backend') {
                             script {
-                                // 🔧 Install safe versions
-                                sh '''
-                                    npm install body-parser@1.20.3 \
-                                                cross-spawn@7.0.5 \
-                                                mongoose@6.13.6 \
-                                                path-to-regexp@1.9.0 \
-                                                qs@6.10.3 \
-                                                semver@5.7.2
-                                '''
+                                sh 'npm ci || npm install'
 
                                 def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-backend-${env.BUILD_ID}"
                                 def backendImage = docker.build(imageName, '.')
@@ -81,15 +70,8 @@ pipeline {
                     steps {
                         dir('frontend') {
                             script {
-                                // 🔧 Install safe versions
-                                sh '''
-                                    npm install body-parser@1.20.3 \
-                                                cross-spawn@7.0.5 \
-                                                mongoose@6.13.6 \
-                                                path-to-regexp@1.9.0 \
-                                                qs@6.10.3 \
-                                                semver@5.7.2
-                                '''
+                                sh 'npm ci || npm install'
+                                sh 'npm run build'
 
                                 def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:3tier-nodejs-frontend-${env.BUILD_ID}"
                                 def frontendImage = docker.build(imageName, '.')
@@ -108,20 +90,18 @@ pipeline {
 
         stage('Deploy to EKS') {
             steps {
-                script {
-                    withAWS(credentials: AWS_CREDENTIALS_ID, region: env.AWS_REGION) {
+                withAWS(credentials: AWS_CREDENTIALS_ID, region: env.AWS_REGION) {
 
-                        sh "aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${env.AWS_REGION}"
+                    sh "aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${env.AWS_REGION}"
 
-                        sh """
-                            helm upgrade --install my-app ./helm/my-app \
-                                --namespace default \
-                                --set backend.image.repository=${ECR_REGISTRY}/${ECR_REPO_NAME} \
-                                --set backend.image.tag=3tier-nodejs-backend-${env.BUILD_ID} \
-                                --set frontend.image.repository=${ECR_REGISTRY}/${ECR_REPO_NAME} \
-                                --set frontend.image.tag=3tier-nodejs-frontend-${env.BUILD_ID}
-                        """
-                    }
+                    sh """
+                        helm upgrade --install my-app ./helm/my-app \
+                            --namespace default \
+                            --set backend.image.repository=${ECR_REGISTRY}/${ECR_REPO_NAME} \
+                            --set backend.image.tag=3tier-nodejs-backend-${env.BUILD_ID} \
+                            --set frontend.image.repository=${ECR_REGISTRY}/${ECR_REPO_NAME} \
+                            --set frontend.image.tag=3tier-nodejs-frontend-${env.BUILD_ID}
+                    """
                 }
             }
         }
