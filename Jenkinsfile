@@ -38,8 +38,7 @@ pipeline {
 
         stage('Build, Scan & Push Images') {
     parallel {
-
-        stage('Backend') {
+        Backend: {
             agent {
                 docker {
                     image 'node:18-alpine'
@@ -62,9 +61,9 @@ pipeline {
                     }
                 }
             }
-        }
+        },
 
-        stage('Frontend') {
+        Frontend: {
             agent {
                 docker {
                     image 'node:18-alpine'
@@ -72,11 +71,9 @@ pipeline {
                 }
             }
             steps {
-                 dir('frontend') {
+                dir('frontend') {
                     script {
                         sh 'npm ci || npm install'
-
-                        // حل مشكلة build error:
                         sh 'export NODE_OPTIONS=--openssl-legacy-provider && npm run build'
 
                         def imageName = "${ECR_REGISTRY}/${ECR_REPO_NAME}:frontend-${env.BUILD_ID}"
@@ -85,13 +82,14 @@ pipeline {
                         sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${imageName}"
 
                         docker.withRegistry("https://${ECR_REGISTRY}", "ecr:${AWS_REGION}:${AWS_CREDENTIALS_ID}") {
-                        frontendImage.push()
+                            frontendImage.push()
+                        }
+                    }
                 }
             }
         }
-    }
-}
-
+    } 
+} 
 
         stage('Deploy to EKS') {
             steps {
