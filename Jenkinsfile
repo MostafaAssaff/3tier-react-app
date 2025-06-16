@@ -1,13 +1,5 @@
-// ===================================================================
-// Jenkinsfile (Final Production-Ready Version)
-// UPDATED: Using a more robust method to call the SonarQube Scanner.
-// ===================================================================
-
 pipeline {
     agent any
-
-    // We no longer need the 'tools' directive here.
-    // Instead, we will define the SonarScanner home path as an environment variable.
 
     environment {
         AWS_REGION        = 'us-west-2'
@@ -15,12 +7,9 @@ pipeline {
         ECR_REPO_NAME     = 'my-app-repo'
         EKS_CLUSTER_NAME  = 'my-eks-cluster'
         
-        SONAR_CREDENTIALS = credentials('sonar-token')
-        AWS_CREDENTIALS_ID = 'aws-credentials'
-        
-        // --- THIS IS THE NEW, MORE ROBUST APPROACH ---
-        // We ask Jenkins for the installation path of the tool named 'SonarScanner-latest'
-        // and store it in an environment variable.
+        SONAR_CREDENTIALS   = credentials('sonar-token')
+        AWS_CREDENTIALS_ID  = 'aws-credentials'
+
         SONAR_SCANNER_HOME = tool 'SonarScanner-latest'
     }
 
@@ -38,9 +27,12 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 script {
-                    withSonarQubeEnv('MySonarQubeServer') { 
-                        // We now call the scanner using its full, absolute path.
-                        // This bypasses any issues with the PATH environment variable.
+                    withSonarQubeEnv('MySonarQubeServer') {
+                        // Debugging steps to verify presence of sonar-project.properties
+                        sh "ls -la"
+                        sh "cat sonar-project.properties || echo 'No sonar-project.properties found!'"
+
+                        // Run scanner
                         sh "${SONAR_SCANNER_HOME}/bin/sonar-scanner"
                     }
                 }
