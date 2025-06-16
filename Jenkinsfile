@@ -13,12 +13,13 @@ pipeline {
     stages {
 
         stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('MySonarQubeServer') {
-                    sh "sonar-scanner"
-                }
-            }
-        }
+    steps {
+        withSonarQubeEnv('MySonarQubeServer') {
+            sh "/opt/sonar-scanner/bin/sonar-scanner"
+             }
+          }
+      }
+
 
         stage('Quality Gate') {
             steps {
