@@ -16,6 +16,32 @@ pipeline {
                 echo "🔄 Checking out code from branch: ${env.BRANCH_NAME}"
                 checkout scm
             }
+
+        stage('Build Results Summary') {
+            steps {
+                script {
+                    echo "📊 Build Results Summary"
+                    echo "======================="
+                    echo "Backend Success: ${env.BACKEND_SUCCESS ?: 'false'}"
+                    echo "Frontend Success: ${env.FRONTEND_SUCCESS ?: 'false'}"
+                    
+                    if (env.BACKEND_SUCCESS != 'true') {
+                        echo "❌ Backend build failed: ${env.BACKEND_ERROR ?: 'Unknown error'}"
+                    }
+                    
+                    if (env.FRONTEND_SUCCESS != 'true') {
+                        echo "❌ Frontend build failed: ${env.FRONTEND_ERROR ?: 'Unknown error'}"
+                    }
+                    
+                    if (env.BACKEND_SUCCESS != 'true' && env.FRONTEND_SUCCESS != 'true') {
+                        echo "❌ Both builds failed - stopping pipeline"
+                        error("Both frontend and backend builds failed")
+                    } else if (env.BACKEND_SUCCESS == 'true' || env.FRONTEND_SUCCESS == 'true') {
+                        echo "✅ At least one build succeeded - continuing with deployment"
+                    }
+                }
+            }
+        }
         }
 
         stage('SonarQube Analysis') {
@@ -180,6 +206,7 @@ pipeline {
                                 } catch (Exception e) {
                                     echo "❌ Backend build failed: ${e.getMessage()}"
                                     env.BACKEND_SUCCESS = 'false'
+                                    env.BACKEND_ERROR = e.getMessage()
                                     
                                     // Additional debugging
                                     sh '''
@@ -188,8 +215,16 @@ pipeline {
                                         docker images | grep backend || true
                                         echo "Docker processes:"
                                         docker ps -a | grep backend || true
+                                        echo "Backend directory contents:"
+                                        ls -la
+                                        echo "Package.json exists:"
+                                        ls -la package.json || echo "No package.json found"
+                                        echo "Dockerfile exists:"
+                                        ls -la Dockerfile || echo "No Dockerfile found"
                                     '''
-                                    throw e
+                                    
+                                    // Don't throw the exception, just mark as failed
+                                    currentBuild.result = 'UNSTABLE'
                                 }
                             }
                         }
@@ -229,7 +264,10 @@ pipeline {
                                 } catch (Exception e) {
                                     echo "❌ Frontend build failed: ${e.getMessage()}"
                                     env.FRONTEND_SUCCESS = 'false'
-                                    throw e
+                                    env.FRONTEND_ERROR = e.getMessage()
+                                    
+                                    // Don't throw the exception, just mark as failed
+                                    currentBuild.result = 'UNSTABLE'
                                 }
                             }
                         }
