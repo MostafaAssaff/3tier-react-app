@@ -18,3 +18,16 @@ spec:
         image: placeholder
         ports:
         - containerPort: 3001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 3001
