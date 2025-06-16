@@ -11,8 +11,16 @@ async function main() {
     useUnifiedTopology: true,
     useNewUrlParser: true,
   });
+
   const app = express();
-  app.use(cors());
+
+  // 👇 Enable CORS only for specific origin (replace with your frontend)
+  const corsOptions = {
+    origin: 'http://localhost:3000', // ✅ replace with your frontend domain in prod
+    optionsSuccessStatus: 200
+  };
+  app.use(cors(corsOptions));
+
   app.use(express.json());
   app.use("/api", routes);
 
