@@ -1,20 +1,9 @@
-const mongoose = require('mongoose');
+const AWS = require('aws-sdk');
 
-const Schema = mongoose.Schema;
-
-let Todo = new Schema({
-    title: {
-        type: String
-    },
-    description: {
-        type: String
-    },
-    is_complete: {
-        type: Boolean
-    },
-    due_date: {
-        type: Date
-    }
+const dynamodb = new AWS.DynamoDB.DocumentClient({
+  region: 'us-west-2' // غيّرها حسب منطقتك
 });
 
-module.exports = mongoose.model('Todo', Todo);
+const TABLE_NAME = 'Todos';
+
+module.exports = { dynamodb, TABLE_NAME };
